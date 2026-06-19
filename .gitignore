@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+
+# Source artwork (~400MB) — already converted to webp and seeded into
+# Supabase Storage. Kept locally only; re-seed reads from here.
+assets/
+*.local
+.env
+.env.*
+!.env.example
