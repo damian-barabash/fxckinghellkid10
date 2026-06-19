@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react'
 import { Routes, Route, useLocation } from 'react-router-dom'
 import Nav from './components/Nav.jsx'
+import Preloader from './components/Preloader.jsx'
 import Home from './pages/Home.jsx'
 import Category from './pages/Category.jsx'
 import Contact from './pages/Contact.jsx'
@@ -16,6 +17,7 @@ export default function App() {
 
   return (
     <>
+      <Preloader />
       {showNav && <Nav />}
       <Routes>
         <Route path="/" element={<Home />} />

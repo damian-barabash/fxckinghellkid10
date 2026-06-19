@@ -5,6 +5,7 @@ import WorkTile from '../components/WorkTile.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import ProjectViewer from '../components/ProjectViewer.jsx'
 import { supabase, publicUrl } from '../lib/supabase.js'
+import { markReady } from '../lib/ready.js'
 import { bySlug } from '../lib/categories.js'
 import { useI18n } from '../lib/i18n.jsx'
 import { useTypewriter } from '../lib/useTypewriter.js'
@@ -47,6 +48,8 @@ export default function Category() {
         worksRef.current = data || []
         fetchedSlug.current = slug
         setLoaded(true)
+        // hide the initial preloader once this category's first thumbs are in
+        markReady((data || []).slice(0, 9).map((x) => publicUrl(x.thumb_url)))
         // if the enter swap already happened, fill in late-arriving data
         setGridState((g) => {
           if (g === 'in') setShown(data || [])

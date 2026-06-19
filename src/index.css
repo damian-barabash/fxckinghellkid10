@@ -32,6 +32,50 @@ button { font-family: inherit; cursor: pointer; }
 
 ::selection { background: var(--green); color: #000; }
 
+/* ---------- PRELOADER ---------- */
+.preloader {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  opacity: 1;
+  transition: opacity 0.6s ease;
+}
+.preloader--hide { opacity: 0; pointer-events: none; }
+.preloader__logo {
+  width: min(60vw, 380px);
+  height: auto;
+  animation: preFade 1.6s ease-in-out infinite;
+}
+@keyframes preFade { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+.preloader__track {
+  position: relative;
+  width: min(46vw, 220px);
+  height: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.preloader__bar {
+  position: absolute;
+  left: 0; top: 0; height: 100%;
+  width: 40%;
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(149, 255, 69, 0.7);
+  animation: preSlide 1.1s cubic-bezier(.55,.1,.3,.95) infinite;
+}
+@keyframes preSlide {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preloader__logo, .preloader__bar { animation: none; }
+}
+
 /* ---------- NAV ---------- */
 .nav {
   position: sticky;

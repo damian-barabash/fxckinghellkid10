@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Footer from '../components/Footer.jsx'
 import { supabase } from '../lib/supabase.js'
+import { markReady } from '../lib/ready.js'
 import { useI18n } from '../lib/i18n.jsx'
 
 export default function Contact() {
@@ -10,6 +11,7 @@ export default function Contact() {
   const [social, setSocial] = useState(null)
 
   useEffect(() => {
+    markReady() // no heavy imagery on contact — reveal immediately
     supabase.from('site_settings').select('social_links').eq('id', 1).single()
       .then(({ data }) => data && setSocial(data.social_links || {}))
   }, [])

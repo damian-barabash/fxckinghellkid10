@@ -4,6 +4,7 @@ import WorkTile from '../components/WorkTile.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import ProjectViewer from '../components/ProjectViewer.jsx'
 import { supabase, publicUrl } from '../lib/supabase.js'
+import { markReady } from '../lib/ready.js'
 import { useI18n } from '../lib/i18n.jsx'
 
 // Fisher–Yates shuffle so the home grid is reordered on every load.
@@ -36,12 +37,15 @@ export default function Home() {
         supabase.from('works').select('*'),
         supabase.from('site_settings').select('*').eq('id', 1).single(),
       ])
-      setWorks(shuffle(w || []))
+      const shuffled = shuffle(w || [])
+      setWorks(shuffled)
       if (s) {
         setSocial(s.social_links || {})
         setWorkWith(s.work_with || [])
       }
       setLoaded(true)
+      // wait for the first screenful of thumbnails before hiding the preloader
+      markReady(shuffled.slice(0, 9).map((x) => publicUrl(x.thumb_url)))
     })()
   }, [])
 

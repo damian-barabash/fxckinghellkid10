@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase.js'
+import { markReady } from '../../lib/ready.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import AdminWorks from './AdminWorks.jsx'
 import AdminSettings from './AdminSettings.jsx'
@@ -11,6 +12,7 @@ export default function Admin() {
   const [tab, setTab] = useState('works')
 
   useEffect(() => {
+    markReady()
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     return () => sub.subscription.unsubscribe()
