@@ -189,7 +189,9 @@ button { font-family: inherit; cursor: pointer; }
   padding: 0 clamp(18px, 5vw, 56px) clamp(60px, 8vw, 110px);
 }
 @media (max-width: 900px) { .grid { column-count: 2; column-gap: 14px; } }
-@media (max-width: 540px) { .grid { column-count: 1; } }
+/* keep at least 2 columns even on the smallest phones */
+@media (max-width: 540px) { .grid { column-count: 2; column-gap: 10px; padding-left: 12px; padding-right: 12px; } }
+@media (max-width: 540px) { .tile, .skel { margin-bottom: 10px; } }
 
 .tile {
   position: relative;
