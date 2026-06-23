@@ -4,7 +4,7 @@
 
 let fired = false
 
-function preloadImages(urls, timeout = 2500) {
+export function preloadImages(urls, timeout = 2500) {
   const loaders = urls.filter(Boolean).map(
     (u) =>
       new Promise((res) => {

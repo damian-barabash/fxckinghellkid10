@@ -201,6 +201,35 @@ button { font-family: inherit; cursor: pointer; }
   background: #0a0a0a;
   border: 1px solid rgba(255,255,255,0.05);
   cursor: pointer;
+  /* each tile fades in once its own image has decoded */
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.55s ease, transform 0.55s cubic-bezier(.16,.84,.3,1);
+  transition-delay: var(--d, 0s);
+}
+.tile.is-ready { opacity: 1; transform: none; }
+
+/* skeleton placeholders shown while a category's images load */
+.skel {
+  width: 100%;
+  margin: 0 0 16px;
+  break-inside: avoid;
+  background: #0e0e0e;
+  border: 1px solid rgba(255,255,255,0.05);
+  position: relative;
+  overflow: hidden;
+}
+.skel::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .tile { opacity: 1 !important; transform: none !important; transition: none !important; }
+  .skel::after { animation: none !important; }
 }
 .tile img, .tile video {
   width: 100%; height: auto; display: block;

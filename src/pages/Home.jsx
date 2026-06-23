@@ -8,13 +8,16 @@ export default function Home() {
   const { t } = useI18n()
   const [social, setSocial] = useState(null)
   const [workWith, setWorkWith] = useState([])
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     markReady() // home has no heavy imagery — reveal immediately
     supabase.from('site_settings').select('*').eq('id', 1).single().then(({ data }) => {
-      if (!data) return
-      setSocial(data.social_links || {})
-      setWorkWith(data.work_with || [])
+      if (data) {
+        setSocial(data.social_links || {})
+        setWorkWith(data.work_with || [])
+      }
+      setLoaded(true)
     })
   }, [])
 
@@ -24,14 +27,17 @@ export default function Home() {
         <img className="hero__logo fade-up" src={import.meta.env.BASE_URL + 'logo.png'} alt="fxckinghellkid10" />
       </section>
 
-      <section className="workwith">
-        <div className="workwith__label">{t('home.workWith')}</div>
-        <div className="workwith__list">
-          {workWith.map((name, i) => (
-            <span key={i} style={{ '--d': `${i * 0.03}s` }}>{name}</span>
-          ))}
-        </div>
-      </section>
+      {/* WORK WITH fades in only once the data has arrived */}
+      {loaded && workWith.length > 0 && (
+        <section className="workwith fade-up">
+          <div className="workwith__label">{t('home.workWith')}</div>
+          <div className="workwith__list">
+            {workWith.map((name, i) => (
+              <span key={i} className="fade-up" style={{ '--d': `${0.1 + i * 0.025}s` }}>{name}</span>
+            ))}
+          </div>
+        </section>
+      )}
 
       <Footer social={social} />
     </main>

@@ -5,9 +5,12 @@ import WorkTile from '../components/WorkTile.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import VideoPlayer from '../components/VideoPlayer.jsx'
 import { supabase, publicUrl } from '../lib/supabase.js'
-import { markReady } from '../lib/ready.js'
+import { markReady, preloadImages } from '../lib/ready.js'
 import { bySlug } from '../lib/categories.js'
 import { useI18n } from '../lib/i18n.jsx'
+
+// varied placeholder heights so the skeleton looks like a real masonry grid
+const SKEL = [320, 240, 400, 280, 360, 220, 300, 380, 260]
 
 export default function Category() {
   const { slug } = useParams()
@@ -24,7 +27,6 @@ export default function Category() {
     if (w.kind === 'video' && w.video_url) {
       setVideo({ src: publicUrl(w.video_url), poster: publicUrl(w.thumb_url), caption: w.title || '' })
     } else if (w.kind === 'project') {
-      // open the real PDF in a new tab (fallback to first image)
       const url = publicUrl(w.pdf_url || w.thumb_url)
       if (url) window.open(url, '_blank', 'noopener')
     } else {
@@ -33,18 +35,26 @@ export default function Category() {
     }
   }
 
+  // fetch + preload thumbnails before revealing the grid — old works are cleared
+  // immediately and a skeleton shows until the new images are decoded, so there
+  // is no "stale works / half-loaded reflow" jump.
   useEffect(() => {
     if (!cat) return
-    setLoaded(false)
     let active = true
-    supabase.from('works').select('*').eq('category', cat.key)
-      .order('sort', { ascending: true }).order('created_at', { ascending: false })
-      .then(({ data }) => {
-        if (!active) return
-        setWorks(data || [])
-        setLoaded(true)
-        markReady((data || []).slice(0, 9).map((x) => publicUrl(x.thumb_url)))
-      })
+    setLoaded(false)
+    setWorks([])
+    ;(async () => {
+      const { data } = await supabase.from('works').select('*').eq('category', cat.key)
+        .order('sort', { ascending: true }).order('created_at', { ascending: false })
+      if (!active) return
+      const list = data || []
+      const thumbs = list.map((x) => publicUrl(x.thumb_url))
+      markReady(thumbs.slice(0, 9))          // initial preloader (first load only)
+      await preloadImages(thumbs.slice(0, 12)) // warm the cache so heights are known
+      if (!active) return
+      setWorks(list)
+      setLoaded(true)
+    })()
     return () => { active = false }
   }, [slug])
 
@@ -63,14 +73,20 @@ export default function Category() {
           <span className="cat-line fade-up" />
         </header>
 
-        {works.length > 0 ? (
-          <div className="grid fade-up">
-            {works.map((w) => (
-              <WorkTile key={w.id} work={w} onOpen={open} />
+        {!loaded ? (
+          <div className="grid" aria-hidden>
+            {SKEL.map((h, i) => (
+              <div className="skel fade-up" style={{ height: h, '--d': `${i * 0.03}s` }} key={i} />
+            ))}
+          </div>
+        ) : works.length > 0 ? (
+          <div className="grid">
+            {works.map((w, i) => (
+              <WorkTile key={w.id} work={w} index={i} onOpen={open} />
             ))}
           </div>
         ) : (
-          loaded && <div className="cat-empty fade-up">{t('cat.empty')}</div>
+          <div className="cat-empty fade-up">{t('cat.empty')}</div>
         )}
 
         <Footer social={social} />
