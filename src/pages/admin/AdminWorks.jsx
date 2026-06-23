@@ -124,11 +124,15 @@ export default function AdminWorks() {
     await load()
   }
 
-  // persist a reordered category list as sequential sort values
+  // persist a reordered category list as sequential sort values.
+  // Rebuild the works array so the category items keep their NEW order (grouped
+  // filters preserve array order) — otherwise the child would snap back.
   const persistOrder = async (items) => {
+    const ids = new Set(items.map((w) => w.id))
     setWorks((prev) => {
-      const map = new Map(items.map((w, i) => [w.id, i]))
-      return prev.map((w) => (map.has(w.id) ? { ...w, sort: map.get(w.id) } : w))
+      const others = prev.filter((w) => !ids.has(w.id))
+      const reordered = items.map((w, i) => ({ ...w, sort: i }))
+      return [...others, ...reordered]
     })
     await Promise.all(items.map((w, i) => supabase.from('works').update({ sort: i }).eq('id', w.id)))
   }
@@ -189,22 +193,33 @@ export default function AdminWorks() {
   )
 }
 
-// ---- one category with drag-to-reorder tiles ----
+// ---- one category with reorderable tiles (drag + arrow buttons) ----
 function CategoryBlock({ cat, items, onEdit, onRemove, onReorder }) {
   const { t } = useI18n()
   const [order, setOrder] = useState(items)
-  const drag = useRef(null)
+  const [dragIdx, setDragIdx] = useState(null)
+  const [overIdx, setOverIdx] = useState(null)
   useEffect(() => { setOrder(items) }, [items])
 
-  const onDrop = (i) => {
-    const from = drag.current
-    drag.current = null
-    if (from == null || from === i) return
+  const apply = (next) => { setOrder(next); onReorder(next) }
+
+  const drop = (to) => {
+    const from = dragIdx
+    setDragIdx(null); setOverIdx(null)
+    if (from == null || from === to) return
     const next = [...order]
     const [m] = next.splice(from, 1)
-    next.splice(i, 0, m)
-    setOrder(next)
-    onReorder(next)
+    next.splice(to, 0, m)
+    apply(next)
+  }
+
+  // reliable fallback: move a tile one step earlier/later
+  const move = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= order.length) return
+    const next = [...order]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    apply(next)
   }
 
   return (
@@ -213,16 +228,23 @@ function CategoryBlock({ cat, items, onEdit, onRemove, onReorder }) {
       <div className="hint" style={{ marginBottom: 12 }}>{t('admin.reorderHint')}</div>
       <div className="adm-grid">
         {order.map((w, i) => (
-          <div className="adm-tile" key={w.id} draggable
-               onDragStart={() => { drag.current = i }}
-               onDragOver={(e) => e.preventDefault()}
-               onDrop={() => onDrop(i)}>
-            <img src={publicUrl(w.thumb_url)} alt="" />
+          <div className={`adm-tile ${dragIdx === i ? 'dragging' : ''} ${overIdx === i ? 'over' : ''}`} key={w.id} draggable
+               onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)) } catch {} }}
+               onDragEnter={() => setOverIdx(i)}
+               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+               onDrop={(e) => { e.preventDefault(); drop(i) }}
+               onDragEnd={() => { setDragIdx(null); setOverIdx(null) }}>
+            <img src={publicUrl(w.thumb_url)} alt="" draggable={false} />
             {w.kind === 'video' && <span className="adm-badge">▶</span>}
             {w.kind === 'project' && w.pdf_url && <span className="adm-badge">PDF</span>}
             <div className="adm-actions">
               <button className="adm-edit" onClick={() => onEdit(w)}>{t('admin.edit')}</button>
               <button className="adm-del" onClick={() => onRemove(w)}>✕</button>
+            </div>
+            <div className="adm-move">
+              <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="move left">‹</button>
+              <span className="adm-pos">{i + 1}</span>
+              <button onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label="move right">›</button>
             </div>
             <div className="meta">
               {w.title || <em style={{ opacity: 0.5 }}>— no title —</em>}
