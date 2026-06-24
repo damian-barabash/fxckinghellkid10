@@ -97,6 +97,10 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
   video.playsInline = true
   video.setAttribute('playsinline', '')
   video.preload = 'auto'
+  video.muted = true // allow play(); audio is still captured via WebAudio below
+  // Safari fires media events far more reliably for an attached element.
+  video.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none'
+  document.body.appendChild(video)
 
   try {
     await new Promise((res, rej) => {
@@ -128,6 +132,9 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
         const dest = audioCtx.createMediaStreamDestination()
         src.connect(dest)
         dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr))
+        // graph established → unmute so the source actually carries signal;
+        // speakers stay silent because the element is rerouted into the graph
+        video.muted = false
       }
     } catch { /* no audio track / unsupported — video only */ }
 
@@ -157,10 +164,29 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     if (audioCtx?.state === 'suspended') await audioCtx.resume().catch(() => {})
     await video.play()
     draw()
-    await new Promise((res) => { video.onended = res })
+
+    // Wait for playback to finish. Safari does not always fire `ended` for a
+    // programmatic element, so also poll currentTime against duration.
+    await new Promise((res) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearInterval(poll)
+        res()
+      }
+      video.onended = finish
+      const poll = setInterval(() => {
+        const d = video.duration
+        if (video.ended || (d && isFinite(d) && video.currentTime >= d - 0.3)) finish()
+      }, 250)
+    })
+
     cancelAnimationFrame(raf)
+    if (onProgress) onProgress(1)
+    // give the recorder a tick to flush, then stop (with a safety timeout)
     rec.stop()
-    await stopped
+    await Promise.race([stopped, new Promise((r) => setTimeout(r, 4000))])
     audioCtx?.close?.().catch(() => {})
 
     const outType = (mimeType ? mimeType.split(';')[0] : '') || chunks[0]?.type || 'video/webm'
@@ -169,6 +195,7 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     return { blob, ext: outType.includes('mp4') ? '.mp4' : '.webm', contentType: outType }
   } finally {
     URL.revokeObjectURL(url)
+    video.remove()
   }
 }
 
