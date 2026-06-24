@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, publicUrl, MEDIA_BUCKET } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, videoToWebm, videoPoster, MAX_UPLOAD_BYTES } from '../../lib/media.js'
+import { toWebp, buildPdf, slugify, compressVideo, videoPoster, MAX_UPLOAD_BYTES } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import Masonry from '../../components/Masonry.jsx'
 
@@ -55,20 +55,25 @@ export default function AdminWorks() {
       const minSort = Math.min(0, ...works.filter((w) => w.category === category).map((w) => w.sort)) - 1
 
       if (isVideo) {
-        // Compress in the browser so the upload fits Supabase's 50 MB free-tier
-        // cap. ffmpeg.wasm works on desktop; on iOS/iPad it can't load — in that
-        // case we fall back to the original file and let the size guard below
-        // surface a clear message if it's still too big.
+        // Compress in the browser (native MediaRecorder — works in Safari &
+        // Chrome) so the upload fits Supabase's 50 MB free-tier cap. If the
+        // browser can't, fall back to the original file and let the size guard
+        // below surface a clear message when it's still too big.
         const file = files[0]
         let blob = file
         let ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
         let contentType = file.type || 'video/mp4'
         try {
           setProgress(t('admin.videoConvert'))
-          blob = await videoToWebm(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
-          ext = '.webm'; contentType = 'video/webm'
+          const out = await compressVideo(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
+          blob = out.blob; ext = out.ext; contentType = out.contentType
+          // if the encoder somehow overshot, retry smaller before giving up
+          if (blob.size > MAX_UPLOAD_BYTES) {
+            const out2 = await compressVideo(file, { maxWidth: 854, targetBytes: 30 * 1024 * 1024, onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
+            blob = out2.blob; ext = out2.ext; contentType = out2.contentType
+          }
         } catch {
-          // compression unavailable (e.g. iOS Safari) — keep the original file
+          // compression unavailable — keep the original file
           blob = file
         }
         if (blob.size > MAX_UPLOAD_BYTES) throw new Error(t('admin.videoTooBig'))

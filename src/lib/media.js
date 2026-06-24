@@ -67,47 +67,109 @@ export function slugify(str) {
     .slice(0, 48) || 'untitled'
 }
 
-// ---- Video compression (client-side, ffmpeg.wasm) ----
-// Re-encodes to a small WebM (VP9 + Opus) so the upload fits Supabase's 50 MB
-// free-tier cap. The 25 MB core loads from a CDN on first use only (never in
-// the public bundle). ffmpeg.wasm runs in desktop browsers; on iOS/iPad Safari
-// it fails to load — callers must catch and fall back to the original file.
+// ---- Video compression (client-side, native MediaRecorder) ----
+// Re-encodes the clip by replaying it into a downscaled canvas and recording
+// that with MediaRecorder, so the upload fits Supabase's 50 MB free-tier cap.
+// Unlike ffmpeg.wasm (which fails to load in Safari — desktop AND iOS), this
+// uses only native browser APIs and works in Safari, Chrome and Firefox.
+// The target bitrate is derived from the clip duration so the output lands near
+// `targetBytes` regardless of length. Recording happens in real time.
 export const MAX_UPLOAD_BYTES = 49 * 1024 * 1024 // a hair under Supabase's 50 MB
 
-let _ffmpeg = null
-async function getFfmpeg() {
-  if (_ffmpeg) return _ffmpeg
-  const { FFmpeg } = await import('@ffmpeg/ffmpeg')
-  const { toBlobURL } = await import('@ffmpeg/util')
-  const ff = new FFmpeg()
-  const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
-  await ff.load({
-    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-  })
-  _ffmpeg = ff
-  return ff
+function pickMime() {
+  if (typeof MediaRecorder === 'undefined') return ''
+  const types = [
+    'video/mp4;codecs=h264,aac', 'video/mp4',
+    'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm',
+  ]
+  return types.find((t) => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) || ''
 }
 
-// Compress a video File to a WebM Blob, scaled to <= maxWidth px wide.
-// onProgress receives a 0..1 ratio. Throws if ffmpeg can't load (iOS).
-export async function videoToWebm(file, { onProgress, maxWidth = 1080, crf = 36 } = {}) {
-  const { fetchFile } = await import('@ffmpeg/util')
-  const ff = await getFfmpeg()
-  if (onProgress) ff.on('progress', ({ progress }) => onProgress(Math.min(1, Math.max(0, progress || 0))))
-  const inName = 'in' + (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4')
-  await ff.writeFile(inName, await fetchFile(file))
-  await ff.exec([
-    '-i', inName,
-    '-vf', `scale='min(${maxWidth}\\,iw)':-2`,
-    '-c:v', 'libvpx-vp9', '-crf', String(crf), '-b:v', '0', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '4',
-    '-c:a', 'libopus', '-b:a', '96k',
-    'out.webm',
-  ])
-  const data = await ff.readFile('out.webm')
-  await ff.deleteFile(inName).catch(() => {})
-  await ff.deleteFile('out.webm').catch(() => {})
-  return new Blob([data.buffer], { type: 'video/webm' })
+// Compress a video File. Resolves { blob, ext, contentType }. Throws if the
+// browser can't do it (caller should fall back to the original file).
+export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 1024 * 1024, onProgress } = {}) {
+  if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) {
+    throw new Error('MediaRecorder unsupported')
+  }
+  const url = URL.createObjectURL(file)
+  const video = document.createElement('video')
+  video.src = url
+  video.playsInline = true
+  video.setAttribute('playsinline', '')
+  video.preload = 'auto'
+
+  try {
+    await new Promise((res, rej) => {
+      video.onloadedmetadata = res
+      video.onerror = () => rej(new Error('video load failed'))
+    })
+
+    let w = video.videoWidth, h = video.videoHeight
+    if (!w || !h) throw new Error('no video dimensions')
+    if (Math.max(w, h) > maxWidth) {
+      const s = maxWidth / Math.max(w, h)
+      w = Math.round((w * s) / 2) * 2
+      h = Math.round((h * s) / 2) * 2
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w; canvas.height = h
+    const ctx = canvas.getContext('2d')
+    const stream = canvas.captureStream(30)
+
+    // route the clip's audio into the recorded stream (silent on speakers —
+    // creating a MediaElementSource reroutes the element away from output)
+    let audioCtx
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext
+      if (AC) {
+        audioCtx = new AC()
+        const src = audioCtx.createMediaElementSource(video)
+        const dest = audioCtx.createMediaStreamDestination()
+        src.connect(dest)
+        dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr))
+      }
+    } catch { /* no audio track / unsupported — video only */ }
+
+    const dur = video.duration && isFinite(video.duration) ? video.duration : 60
+    const audioBps = 96_000
+    let videoBps = Math.floor((targetBytes * 8) / dur) - audioBps
+    videoBps = Math.max(600_000, Math.min(videoBps, 4_000_000))
+
+    const mimeType = pickMime()
+    const rec = new MediaRecorder(stream, {
+      ...(mimeType ? { mimeType } : {}),
+      videoBitsPerSecond: videoBps,
+      audioBitsPerSecond: audioBps,
+    })
+    const chunks = []
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
+    const stopped = new Promise((res) => { rec.onstop = res })
+
+    if (onProgress) video.ontimeupdate = () => onProgress(Math.min(0.99, video.currentTime / dur))
+
+    rec.start(1000)
+    let raf = 0
+    const draw = () => {
+      ctx.drawImage(video, 0, 0, w, h)
+      if (!video.ended) raf = requestAnimationFrame(draw)
+    }
+    if (audioCtx?.state === 'suspended') await audioCtx.resume().catch(() => {})
+    await video.play()
+    draw()
+    await new Promise((res) => { video.onended = res })
+    cancelAnimationFrame(raf)
+    rec.stop()
+    await stopped
+    audioCtx?.close?.().catch(() => {})
+
+    const outType = (mimeType ? mimeType.split(';')[0] : '') || chunks[0]?.type || 'video/webm'
+    const blob = new Blob(chunks, { type: outType })
+    if (!blob.size) throw new Error('empty recording')
+    return { blob, ext: outType.includes('mp4') ? '.mp4' : '.webm', contentType: outType }
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
 
 // Make a poster (WebP) from the first frame of a video File. Best-effort:
