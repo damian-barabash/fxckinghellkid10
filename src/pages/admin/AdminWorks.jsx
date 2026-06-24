@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, publicUrl, MEDIA_BUCKET } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, videoPoster } from '../../lib/media.js'
+import { toWebp, buildPdf, slugify, videoToWebm, videoPoster, MAX_UPLOAD_BYTES } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import Masonry from '../../components/Masonry.jsx'
 
@@ -55,11 +55,23 @@ export default function AdminWorks() {
       const minSort = Math.min(0, ...works.filter((w) => w.category === category).map((w) => w.sort)) - 1
 
       if (isVideo) {
-        // Upload the original file as-is — no browser transcoding. (ffmpeg.wasm
-        // failed to load on iOS/iPad: "failed to import ffmpeg-core.js".) mp4/mov
-        // play natively in <video> on every modern browser, so a direct upload is
-        // both reliable and instant.
+        // Compress in the browser so the upload fits Supabase's 50 MB free-tier
+        // cap. ffmpeg.wasm works on desktop; on iOS/iPad it can't load — in that
+        // case we fall back to the original file and let the size guard below
+        // surface a clear message if it's still too big.
         const file = files[0]
+        let blob = file
+        let ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
+        let contentType = file.type || 'video/mp4'
+        try {
+          setProgress(t('admin.videoConvert'))
+          blob = await videoToWebm(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
+          ext = '.webm'; contentType = 'video/webm'
+        } catch {
+          // compression unavailable (e.g. iOS Safari) — keep the original file
+          blob = file
+        }
+        if (blob.size > MAX_UPLOAD_BYTES) throw new Error(t('admin.videoTooBig'))
         setProgress(t('admin.uploading'))
         // poster from the first frame (best-effort — never blocks the upload)
         let posterPath = null
@@ -67,8 +79,7 @@ export default function AdminWorks() {
           const poster = await videoPoster(file)
           if (poster) posterPath = await uploadBlob(`${base}-poster.webp`, poster, 'image/webp')
         } catch { /* no poster — the <video> still renders */ }
-        const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
-        const videoPath = await uploadBlob(`${base}${ext}`, file, file.type || 'video/mp4')
+        const videoPath = await uploadBlob(`${base}${ext}`, blob, contentType)
         await supabase.from('works').insert({
           category, kind: 'video', title: title.trim() || null,
           thumb_url: posterPath, images: posterPath ? [posterPath] : [], video_url: videoPath, sort: minSort,

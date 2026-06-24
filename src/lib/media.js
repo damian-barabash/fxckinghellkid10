@@ -67,6 +67,49 @@ export function slugify(str) {
     .slice(0, 48) || 'untitled'
 }
 
+// ---- Video compression (client-side, ffmpeg.wasm) ----
+// Re-encodes to a small WebM (VP9 + Opus) so the upload fits Supabase's 50 MB
+// free-tier cap. The 25 MB core loads from a CDN on first use only (never in
+// the public bundle). ffmpeg.wasm runs in desktop browsers; on iOS/iPad Safari
+// it fails to load — callers must catch and fall back to the original file.
+export const MAX_UPLOAD_BYTES = 49 * 1024 * 1024 // a hair under Supabase's 50 MB
+
+let _ffmpeg = null
+async function getFfmpeg() {
+  if (_ffmpeg) return _ffmpeg
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg')
+  const { toBlobURL } = await import('@ffmpeg/util')
+  const ff = new FFmpeg()
+  const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
+  await ff.load({
+    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+  })
+  _ffmpeg = ff
+  return ff
+}
+
+// Compress a video File to a WebM Blob, scaled to <= maxWidth px wide.
+// onProgress receives a 0..1 ratio. Throws if ffmpeg can't load (iOS).
+export async function videoToWebm(file, { onProgress, maxWidth = 1080, crf = 36 } = {}) {
+  const { fetchFile } = await import('@ffmpeg/util')
+  const ff = await getFfmpeg()
+  if (onProgress) ff.on('progress', ({ progress }) => onProgress(Math.min(1, Math.max(0, progress || 0))))
+  const inName = 'in' + (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4')
+  await ff.writeFile(inName, await fetchFile(file))
+  await ff.exec([
+    '-i', inName,
+    '-vf', `scale='min(${maxWidth}\\,iw)':-2`,
+    '-c:v', 'libvpx-vp9', '-crf', String(crf), '-b:v', '0', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '4',
+    '-c:a', 'libopus', '-b:a', '96k',
+    'out.webm',
+  ])
+  const data = await ff.readFile('out.webm')
+  await ff.deleteFile(inName).catch(() => {})
+  await ff.deleteFile('out.webm').catch(() => {})
+  return new Blob([data.buffer], { type: 'video/webm' })
+}
+
 // Make a poster (WebP) from the first frame of a video File. Best-effort:
 // hardened for iOS/iPad Safari (inline + muted, nudge play before seeking).
 export async function videoPoster(file, { maxEdge = 1280, quality = 0.82 } = {}) {

@@ -357,7 +357,7 @@ button { font-family: inherit; cursor: pointer; }
   transition: opacity 0.2s, color 0.2s, border-color 0.2s, background 0.2s;
 }
 .soc:hover { opacity: 1; color: var(--green); border-color: var(--green); }
-.soc__icon { width: 20px; height: 20px; display: flex; flex: 0 0 auto; }
+.soc__icon { width: 20px; height: 20px; display: flex; flex: 0 0 auto; color: var(--green); }
 .soc__icon svg { width: 20px; height: 20px; }
 .soc__label {
   max-width: 0; overflow: hidden; white-space: nowrap;
