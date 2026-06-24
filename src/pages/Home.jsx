@@ -23,10 +23,6 @@ export default function Home() {
 
   return (
     <main className="page">
-      <section className="hero">
-        <img className="hero__logo fade-up" src={import.meta.env.BASE_URL + 'logo.png'} alt="fxckinghellkid10" />
-      </section>
-
       {/* WORK WITH fades in only once the data has arrived */}
       {loaded && workWith.length > 0 && (
         <section className="workwith fade-up">

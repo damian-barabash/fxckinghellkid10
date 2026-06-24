@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, publicUrl, MEDIA_BUCKET } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, videoToWebm, videoPoster } from '../../lib/media.js'
+import { toWebp, buildPdf, slugify, videoPoster } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
+import Masonry from '../../components/Masonry.jsx'
 
 const uploadBlob = async (path, blob, contentType) => {
   const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, blob, { contentType, upsert: true })
@@ -54,16 +55,23 @@ export default function AdminWorks() {
       const minSort = Math.min(0, ...works.filter((w) => w.category === category).map((w) => w.sort)) - 1
 
       if (isVideo) {
+        // Upload the original file as-is — no browser transcoding. (ffmpeg.wasm
+        // failed to load on iOS/iPad: "failed to import ffmpeg-core.js".) mp4/mov
+        // play natively in <video> on every modern browser, so a direct upload is
+        // both reliable and instant.
         const file = files[0]
-        setProgress(t('admin.videoConvert'))
-        const webm = await videoToWebm(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
         setProgress(t('admin.uploading'))
-        const poster = await videoPoster(file)
-        const posterPath = await uploadBlob(`${base}-poster.webp`, poster, 'image/webp')
-        const videoPath = await uploadBlob(`${base}.webm`, webm, 'video/webm')
+        // poster from the first frame (best-effort — never blocks the upload)
+        let posterPath = null
+        try {
+          const poster = await videoPoster(file)
+          if (poster) posterPath = await uploadBlob(`${base}-poster.webp`, poster, 'image/webp')
+        } catch { /* no poster — the <video> still renders */ }
+        const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
+        const videoPath = await uploadBlob(`${base}${ext}`, file, file.type || 'video/mp4')
         await supabase.from('works').insert({
           category, kind: 'video', title: title.trim() || null,
-          thumb_url: posterPath, images: [posterPath], video_url: videoPath, sort: minSort,
+          thumb_url: posterPath, images: posterPath ? [posterPath] : [], video_url: videoPath, sort: minSort,
         })
       } else if (isProject) {
         const blobs = []; const paths = []; let i = 0
@@ -226,33 +234,33 @@ function CategoryBlock({ cat, items, onEdit, onRemove, onReorder }) {
     <div className="card">
       <h3 style={{ marginTop: 0 }}>{cat.en} <span style={{ color: 'var(--muted)', fontSize: 13 }}>({order.length})</span></h3>
       <div className="hint" style={{ marginBottom: 12 }}>{t('admin.reorderHint')}</div>
-      <div className="adm-grid">
-        {order.map((w, i) => (
-          <div className={`adm-tile ${dragIdx === i ? 'dragging' : ''} ${overIdx === i ? 'over' : ''}`} key={w.id} draggable
-               onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)) } catch {} }}
-               onDragEnter={() => setOverIdx(i)}
-               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
-               onDrop={(e) => { e.preventDefault(); drop(i) }}
-               onDragEnd={() => { setDragIdx(null); setOverIdx(null) }}>
-            <img src={publicUrl(w.thumb_url)} alt="" draggable={false} />
-            {w.kind === 'video' && <span className="adm-badge">▶</span>}
-            {w.kind === 'project' && w.pdf_url && <span className="adm-badge">PDF</span>}
-            <div className="adm-actions">
-              <button className="adm-edit" onClick={() => onEdit(w)}>{t('admin.edit')}</button>
-              <button className="adm-del" onClick={() => onRemove(w)}>✕</button>
-            </div>
-            <div className="adm-move">
-              <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="move left">‹</button>
-              <span className="adm-pos">{i + 1}</span>
-              <button onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label="move right">›</button>
-            </div>
-            <div className="meta">
-              {w.title || <em style={{ opacity: 0.5 }}>— no title —</em>}
-              {(w.images?.length > 1) && <span style={{ color: 'var(--muted)' }}> · {w.images.length}</span>}
-            </div>
+      <Masonry className="adm-masonry" items={order} render={(w, i) => (
+        <div className={`adm-tile ${dragIdx === i ? 'dragging' : ''} ${overIdx === i ? 'over' : ''}`} key={w.id} draggable
+             onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)) } catch {} }}
+             onDragEnter={() => setOverIdx(i)}
+             onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+             onDrop={(e) => { e.preventDefault(); drop(i) }}
+             onDragEnd={() => { setDragIdx(null); setOverIdx(null) }}>
+          {w.thumb_url
+            ? <img src={publicUrl(w.thumb_url)} alt="" draggable={false} />
+            : <video src={publicUrl(w.video_url)} muted playsInline preload="metadata" draggable={false} />}
+          {w.kind === 'video' && <span className="adm-badge">▶</span>}
+          {w.kind === 'project' && w.pdf_url && <span className="adm-badge">PDF</span>}
+          <div className="adm-actions">
+            <button className="adm-edit" onClick={() => onEdit(w)}>{t('admin.edit')}</button>
+            <button className="adm-del" onClick={() => onRemove(w)}>✕</button>
           </div>
-        ))}
-      </div>
+          <div className="adm-move">
+            <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="move left">‹</button>
+            <span className="adm-pos">{i + 1}</span>
+            <button onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label="move right">›</button>
+          </div>
+          <div className="meta">
+            {w.title || <em style={{ opacity: 0.5 }}>— no title —</em>}
+            {(w.images?.length > 1) && <span style={{ color: 'var(--muted)' }}> · {w.images.length}</span>}
+          </div>
+        </div>
+      )} />
     </div>
   )
 }

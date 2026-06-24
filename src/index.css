@@ -182,23 +182,23 @@ button { font-family: inherit; cursor: pointer; }
   .page, .fade-up, .cat-line { animation: none !important; transition: none !important; }
 }
 
-/* ---------- WORK GRID (masonry — full, never-cropped images) ---------- */
-.grid {
-  column-count: 3;
-  column-gap: 16px;
+/* ---------- WORK GRID (row-major masonry — full, never-cropped images) ---------- */
+/* Columns are flex stacks (item i → column i % N) so they always start level at
+   the top and read 1,2,3… left-to-right, matching the admin reorder grid. */
+.masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
   padding: 0 clamp(18px, 5vw, 56px) clamp(60px, 8vw, 110px);
 }
-@media (max-width: 900px) { .grid { column-count: 2; column-gap: 14px; } }
-/* keep at least 2 columns even on the smallest phones */
-@media (max-width: 540px) { .grid { column-count: 2; column-gap: 10px; padding-left: 12px; padding-right: 12px; } }
-@media (max-width: 540px) { .tile, .skel { margin-bottom: 10px; } }
+.masonry__col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 900px) { .masonry, .masonry__col { gap: 14px; } }
+@media (max-width: 540px) { .masonry { gap: 10px; padding-left: 12px; padding-right: 12px; } .masonry__col { gap: 10px; } }
 
 .tile {
   position: relative;
   display: block;
   width: 100%;
-  margin: 0 0 16px;
-  break-inside: avoid;
   overflow: hidden;
   background: #0a0a0a;
   border: 1px solid rgba(255,255,255,0.05);
@@ -214,8 +214,6 @@ button { font-family: inherit; cursor: pointer; }
 /* skeleton placeholders shown while a category's images load */
 .skel {
   width: 100%;
-  margin: 0 0 16px;
-  break-inside: avoid;
   background: #0e0e0e;
   border: 1px solid rgba(255,255,255,0.05);
   position: relative;
@@ -326,8 +324,7 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---------- WORK WITH ---------- */
 .workwith {
-  padding: clamp(70px, 12vw, 140px) clamp(18px, 5vw, 56px);
-  border-top: 1px solid var(--line);
+  padding: clamp(80px, 16vh, 180px) clamp(18px, 5vw, 56px) clamp(70px, 12vw, 140px);
 }
 .workwith__label {
   font-size: 12px; letter-spacing: 0.24em; text-transform: uppercase;
@@ -425,9 +422,8 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ---------- CONTACT ---------- */
-.contact { padding: clamp(50px, 10vw, 120px) clamp(18px, 5vw, 56px) 120px; max-width: 920px; }
-.contact h1 { font-family: var(--display); font-weight: 700; font-size: clamp(48px, 10vw, 110px); margin: 0 0 24px; }
-.contact .sub { color: var(--muted); font-size: clamp(15px, 1.8vw, 19px); max-width: 60ch; line-height: 1.5; margin-bottom: clamp(40px, 7vw, 80px); }
+.contact { padding: 0 clamp(18px, 5vw, 56px) 120px; max-width: 920px; }
+.contact .sub { color: var(--muted); font-size: clamp(15px, 1.8vw, 19px); max-width: 60ch; line-height: 1.5; margin: 8px 0 clamp(40px, 7vw, 80px); }
 .field { margin-bottom: 34px; }
 .field label { display: block; font-size: 15px; margin-bottom: 8px; }
 .field label .req { color: var(--muted); font-size: 13px; margin-left: 6px; }
@@ -480,9 +476,12 @@ button { font-family: inherit; cursor: pointer; }
 .inp:focus, .sel:focus, .txta:focus { border-color: var(--green); }
 .txta { min-height: 140px; resize: vertical; }
 .mt { margin-top: 16px; }
-.adm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+/* admin reorder grid uses the same row-major masonry as the site so the order
+   shown here matches the public page tile-for-tile */
+.adm-masonry { padding: 0; gap: 12px; }
+.adm-masonry .masonry__col { gap: 12px; }
 .adm-tile { border: 1px solid var(--line); border-radius: 2px; overflow: hidden; position: relative; }
-.adm-tile img { aspect-ratio: 1/1; object-fit: cover; width: 100%; }
+.adm-tile img, .adm-tile video { display: block; width: 100%; height: auto; }
 .adm-tile .meta { padding: 8px; font-size: 11px; color: var(--muted); }
 .adm-del {
   position: absolute; top: 6px; right: 6px;

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
 import WorkTile from '../components/WorkTile.jsx'
+import Masonry from '../components/Masonry.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import VideoPlayer from '../components/VideoPlayer.jsx'
 import { supabase, publicUrl } from '../lib/supabase.js'
@@ -74,17 +75,13 @@ export default function Category() {
         </header>
 
         {!loaded ? (
-          <div className="grid" aria-hidden>
-            {SKEL.map((h, i) => (
-              <div className="skel fade-up" style={{ height: h, '--d': `${i * 0.03}s` }} key={i} />
-            ))}
-          </div>
+          <Masonry items={SKEL} render={(h, i) => (
+            <div className="skel fade-up" style={{ height: h, '--d': `${i * 0.03}s` }} key={i} />
+          )} />
         ) : works.length > 0 ? (
-          <div className="grid">
-            {works.map((w, i) => (
-              <WorkTile key={w.id} work={w} index={i} onOpen={open} />
-            ))}
-          </div>
+          <Masonry items={works} render={(w, i) => (
+            <WorkTile key={w.id} work={w} index={i} onOpen={open} />
+          )} />
         ) : (
           <div className="cat-empty fade-up">{t('cat.empty')}</div>
         )}

@@ -65,8 +65,11 @@ export default function Contact() {
 
   return (
     <main className="page">
-      <section className="contact">
+      <header className="cat-head">
         <h1 className="fade-up">{t('contact.title')}</h1>
+        <span className="cat-line fade-up" />
+      </header>
+      <section className="contact">
         <p className="sub fade-up">{t('contact.sub')}</p>
 
         <form onSubmit={submit} className="fade-up">
