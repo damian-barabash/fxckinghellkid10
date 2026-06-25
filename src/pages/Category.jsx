@@ -29,7 +29,9 @@ export default function Category() {
       setVideo({ src: publicUrl(w.video_url), poster: publicUrl(w.thumb_url), caption: w.title || '' })
     } else if (w.kind === 'project') {
       const url = publicUrl(w.pdf_url || w.thumb_url)
-      if (url) window.open(url, '_blank', 'noopener')
+      // cache-bust: the PDF path is reused when a project is rebuilt, so force a
+      // fresh fetch (a stale browser/CDN copy once showed an old white-bg PDF)
+      if (url) window.open(`${url}?t=${Date.now()}`, '_blank', 'noopener')
     } else {
       const imgs = (w.images?.length ? w.images : [w.thumb_url]).map(publicUrl)
       setBox({ images: imgs, caption: w.title || '' })
