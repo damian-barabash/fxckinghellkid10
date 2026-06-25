@@ -63,25 +63,28 @@ export default function AdminWorks() {
         let blob = file
         let ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
         let contentType = file.type || 'video/mp4'
+        let posterBlob = null
         try {
           setProgress(t('admin.videoConvert'))
           const out = await compressVideo(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
-          blob = out.blob; ext = out.ext; contentType = out.contentType
+          blob = out.blob; ext = out.ext; contentType = out.contentType; posterBlob = out.poster
           // if the encoder somehow overshot, retry smaller before giving up
           if (blob.size > MAX_UPLOAD_BYTES) {
             const out2 = await compressVideo(file, { maxWidth: 854, targetBytes: 30 * 1024 * 1024, onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
-            blob = out2.blob; ext = out2.ext; contentType = out2.contentType
+            blob = out2.blob; ext = out2.ext; contentType = out2.contentType; posterBlob = out2.poster || posterBlob
           }
-        } catch {
-          // compression unavailable — keep the original file
+        } catch (err) {
+          // compression unavailable (e.g. unsupported browser) — keep original
+          console.warn('video compression failed, using original:', err)
           blob = file
         }
         if (blob.size > MAX_UPLOAD_BYTES) throw new Error(t('admin.videoTooBig'))
         setProgress(t('admin.uploading'))
-        // poster from the first frame (best-effort — never blocks the upload)
+        // poster: prefer the frame grabbed during compression; else best-effort
+        // decode (time-boxed). Never blocks the upload.
         let posterPath = null
         try {
-          const poster = await videoPoster(file)
+          const poster = posterBlob || await videoPoster(file)
           if (poster) posterPath = await uploadBlob(`${base}-poster.webp`, poster, 'image/webp')
         } catch { /* no poster — the <video> still renders */ }
         const videoPath = await uploadBlob(`${base}${ext}`, blob, contentType)

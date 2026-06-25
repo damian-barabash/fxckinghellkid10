@@ -28,6 +28,10 @@ export async function toWebp(file, { maxEdge = 2200, quality = 0.86 } = {}) {
   canvas.width = width
   canvas.height = height
   const ctx = canvas.getContext('2d')
+  // Always paint a solid black backdrop first, so transparent PNGs flatten onto
+  // black instead of showing white (in tiles and, after PDF build, in viewers).
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, width, height)
   ctx.drawImage(img, 0, 0, width, height)
   const blob = await new Promise((res) => canvas.toBlob(res, 'image/webp', quality))
   return blob
@@ -40,7 +44,11 @@ async function blobToPngBytes(blob) {
   const canvas = document.createElement('canvas')
   canvas.width = img.width
   canvas.height = img.height
-  canvas.getContext('2d').drawImage(img, 0, 0)
+  const ctx = canvas.getContext('2d')
+  // black backdrop so a transparent source never shows white in the PDF viewer
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, img.width, img.height)
+  ctx.drawImage(img, 0, 0)
   const pngBlob = await new Promise((res) => canvas.toBlob(res, 'image/png'))
   return new Uint8Array(await pngBlob.arrayBuffer())
 }
@@ -85,8 +93,22 @@ function pickMime() {
   return types.find((t) => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) || ''
 }
 
-// Compress a video File. Resolves { blob, ext, contentType }. Throws if the
-// browser can't do it (caller should fall back to the original file).
+// Reject a promise if it doesn't settle in `ms` — so no single step can hang
+// the whole upload (the symptom: progress reaches 100% then stalls forever).
+function withTimeout(promise, ms, msg) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(msg || 'timeout')), ms)),
+  ])
+}
+
+// Compress a video File entirely in the browser (native MediaRecorder — works
+// in Safari/Chrome/Firefox, unlike ffmpeg.wasm which won't load in WebKit) so
+// the upload fits Supabase's 50 MB free-tier cap. The downscaled clip is
+// recorded in real time off a canvas; a poster frame is grabbed from that same
+// canvas (no separate decode pass that could hang). Every async step is
+// timeout-guarded. Resolves { blob, poster, ext, contentType }; throws on
+// failure so the caller can fall back to the original file.
 export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 1024 * 1024, onProgress } = {}) {
   if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) {
     throw new Error('MediaRecorder unsupported')
@@ -97,16 +119,18 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
   video.playsInline = true
   video.setAttribute('playsinline', '')
   video.preload = 'auto'
-  video.muted = true // allow play(); audio is still captured via WebAudio below
+  video.muted = true
   // Safari fires media events far more reliably for an attached element.
   video.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none'
   document.body.appendChild(video)
+  let raf = 0
+  let audioCtx
 
   try {
-    await new Promise((res, rej) => {
+    await withTimeout(new Promise((res, rej) => {
       video.onloadedmetadata = res
       video.onerror = () => rej(new Error('video load failed'))
-    })
+    }), 30_000, 'video metadata timeout')
 
     let w = video.videoWidth, h = video.videoHeight
     if (!w || !h) throw new Error('no video dimensions')
@@ -123,7 +147,7 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
 
     // route the clip's audio into the recorded stream (silent on speakers —
     // creating a MediaElementSource reroutes the element away from output)
-    let audioCtx
+    let hasAudioGraph = false
     try {
       const AC = window.AudioContext || window.webkitAudioContext
       if (AC) {
@@ -132,16 +156,14 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
         const dest = audioCtx.createMediaStreamDestination()
         src.connect(dest)
         dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr))
-        // graph established → unmute so the source actually carries signal;
-        // speakers stay silent because the element is rerouted into the graph
-        video.muted = false
+        hasAudioGraph = true
       }
     } catch { /* no audio track / unsupported — video only */ }
 
     const dur = video.duration && isFinite(video.duration) ? video.duration : 60
     const audioBps = 96_000
-    let videoBps = Math.floor((targetBytes * 8) / dur) - audioBps
-    videoBps = Math.max(600_000, Math.min(videoBps, 4_000_000))
+    let videoBps = Math.floor((targetBytes * 8) / dur) - (hasAudioGraph ? audioBps : 0)
+    videoBps = Math.max(500_000, Math.min(videoBps, 4_000_000))
 
     const mimeType = pickMime()
     const rec = new MediaRecorder(stream, {
@@ -153,47 +175,61 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
     const stopped = new Promise((res) => { rec.onstop = res })
 
-    if (onProgress) video.ontimeupdate = () => onProgress(Math.min(0.99, video.currentTime / dur))
+    // Start playback. With the audio graph attached the element can stay
+    // unmuted (output is rerouted, so speakers stay silent) — but an unmuted
+    // autoplay may be blocked, so fall back to muted playback (video-only)
+    // instead of throwing the whole job away.
+    if (audioCtx?.state === 'suspended') await audioCtx.resume().catch(() => {})
+    try {
+      if (hasAudioGraph) video.muted = false
+      await withTimeout(video.play(), 10_000, 'play timeout')
+    } catch {
+      video.muted = true
+      await withTimeout(video.play(), 10_000, 'play timeout').catch(() => {
+        throw new Error('cannot play video for compression')
+      })
+    }
 
     rec.start(1000)
-    let raf = 0
+    let poster = null
     const draw = () => {
       ctx.drawImage(video, 0, 0, w, h)
-      if (!video.ended) raf = requestAnimationFrame(draw)
+      // grab a poster from the first painted frame (same canvas, no extra decode)
+      if (!poster && video.currentTime > 0) {
+        try { canvas.toBlob((b) => { if (b && !poster) poster = b }, 'image/webp', 0.82) } catch { /* ignore */ }
+      }
+      if (onProgress && dur) onProgress(Math.min(0.99, video.currentTime / dur))
+      if (!video.ended && !video.paused) raf = requestAnimationFrame(draw)
     }
-    if (audioCtx?.state === 'suspended') await audioCtx.resume().catch(() => {})
-    await video.play()
     draw()
 
-    // Wait for playback to finish. Safari does not always fire `ended` for a
-    // programmatic element, so also poll currentTime against duration.
-    await new Promise((res) => {
+    // Wait for playback to finish — Safari does not always fire `ended` for a
+    // programmatic element, so also poll currentTime. Hard cap so a stuck clip
+    // can't hang forever (real-time encode ≈ clip length).
+    await withTimeout(new Promise((res) => {
       let settled = false
-      const finish = () => {
-        if (settled) return
-        settled = true
-        clearInterval(poll)
-        res()
-      }
+      const finish = () => { if (settled) return; settled = true; clearInterval(poll); res() }
       video.onended = finish
       const poll = setInterval(() => {
         const d = video.duration
         if (video.ended || (d && isFinite(d) && video.currentTime >= d - 0.3)) finish()
       }, 250)
-    })
+    }), dur * 1000 * 1.6 + 15_000, 'compression timeout')
 
     cancelAnimationFrame(raf)
     if (onProgress) onProgress(1)
-    // give the recorder a tick to flush, then stop (with a safety timeout)
     rec.stop()
-    await Promise.race([stopped, new Promise((r) => setTimeout(r, 4000))])
+    await Promise.race([stopped, new Promise((r) => setTimeout(r, 5000))])
     audioCtx?.close?.().catch(() => {})
 
     const outType = (mimeType ? mimeType.split(';')[0] : '') || chunks[0]?.type || 'video/webm'
     const blob = new Blob(chunks, { type: outType })
     if (!blob.size) throw new Error('empty recording')
-    return { blob, ext: outType.includes('mp4') ? '.mp4' : '.webm', contentType: outType }
+    return { blob, poster, ext: outType.includes('mp4') ? '.mp4' : '.webm', contentType: outType }
   } finally {
+    cancelAnimationFrame(raf)
+    try { video.pause() } catch { /* ignore */ }
+    audioCtx?.close?.().catch(() => {})
     URL.revokeObjectURL(url)
     video.remove()
   }
@@ -211,7 +247,9 @@ export async function videoPoster(file, { maxEdge = 1280, quality = 0.82 } = {})
     v.preload = 'auto'
     v.src = url
     let done = false
-    const finish = (blob) => { if (done) return; done = true; URL.revokeObjectURL(url); resolve(blob) }
+    const finish = (blob) => { if (done) return; done = true; clearTimeout(guard); URL.revokeObjectURL(url); resolve(blob) }
+    // never hang the upload waiting on a poster — give up after 8s
+    const guard = setTimeout(() => finish(null), 8000)
     const grab = () => {
       let { videoWidth: w, videoHeight: h } = v
       if (!w || !h) return finish(null)

@@ -200,7 +200,7 @@ button { font-family: inherit; cursor: pointer; }
   display: block;
   width: 100%;
   overflow: hidden;
-  background: #0a0a0a;
+  background: #000;
   border: 1px solid rgba(255,255,255,0.05);
   cursor: pointer;
   /* each tile fades in once its own image has decoded */
@@ -480,7 +480,7 @@ button { font-family: inherit; cursor: pointer; }
    shown here matches the public page tile-for-tile */
 .adm-masonry { padding: 0; gap: 12px; }
 .adm-masonry .masonry__col { gap: 12px; }
-.adm-tile { border: 1px solid var(--line); border-radius: 2px; overflow: hidden; position: relative; }
+.adm-tile { border: 1px solid var(--line); border-radius: 2px; overflow: hidden; position: relative; background: #000; }
 .adm-tile img, .adm-tile video { display: block; width: 100%; height: auto; }
 .adm-tile .meta { padding: 8px; font-size: 11px; color: var(--muted); }
 .adm-del {
@@ -581,7 +581,7 @@ button { font-family: inherit; cursor: pointer; }
   padding: 24px;
 }
 .edit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-top: 6px; }
-.edit-thumb { position: relative; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; cursor: grab; }
+.edit-thumb { position: relative; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; cursor: grab; background: #000; }
 .edit-thumb img { width: 100%; aspect-ratio: 1/1; object-fit: cover; }
 .edit-cover {
   position: absolute; top: 4px; left: 4px;
