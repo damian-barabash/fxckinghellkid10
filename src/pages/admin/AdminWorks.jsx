@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, publicUrl, MEDIA_BUCKET } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, compressVideo, videoPoster, MAX_UPLOAD_BYTES } from '../../lib/media.js'
+import { toWebp, buildPdf, slugify, prepareVideo } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import Masonry from '../../components/Masonry.jsx'
 
@@ -55,37 +55,28 @@ export default function AdminWorks() {
       const minSort = Math.min(0, ...works.filter((w) => w.category === category).map((w) => w.sort)) - 1
 
       if (isVideo) {
-        // Compress in the browser (native MediaRecorder — works in Safari &
-        // Chrome) so the upload fits Supabase's 50 MB free-tier cap. If the
-        // browser can't, fall back to the original file and let the size guard
-        // below surface a clear message when it's still too big.
+        // Process the clip entirely in the browser so the upload fits Supabase's
+        // 50 MB free-tier cap. prepareVideo picks the right engine per codec:
+        // MediaRecorder for anything the browser can decode (H.264 everywhere,
+        // also MJPEG/HEVC in Safari), ffmpeg.wasm as a best-effort fallback for
+        // exotic codecs in Chrome/Firefox. It throws a coded error otherwise.
         const file = files[0]
-        let blob = file
-        let ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4').toLowerCase()
-        let contentType = file.type || 'video/mp4'
-        let posterBlob = null
+        let blob, ext, contentType, posterBlob
         try {
           setProgress(t('admin.videoConvert'))
-          const out = await compressVideo(file, { onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
+          const out = await prepareVideo(file, {
+            onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`),
+          })
           blob = out.blob; ext = out.ext; contentType = out.contentType; posterBlob = out.poster
-          // if the encoder somehow overshot, retry smaller before giving up
-          if (blob.size > MAX_UPLOAD_BYTES) {
-            const out2 = await compressVideo(file, { maxWidth: 854, targetBytes: 30 * 1024 * 1024, onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`) })
-            blob = out2.blob; ext = out2.ext; contentType = out2.contentType; posterBlob = out2.poster || posterBlob
-          }
         } catch (err) {
-          // compression unavailable (e.g. unsupported browser) — keep original
-          console.warn('video compression failed, using original:', err)
-          blob = file
+          if (err?.code === 'too-big') throw new Error(t('admin.videoTooBig'))
+          if (err?.code === 'unsupported') throw new Error(t('admin.videoUnsupported'))
+          throw err
         }
-        if (blob.size > MAX_UPLOAD_BYTES) throw new Error(t('admin.videoTooBig'))
         setProgress(t('admin.uploading'))
-        // poster: prefer the frame grabbed during compression; else best-effort
-        // decode (time-boxed). Never blocks the upload.
         let posterPath = null
         try {
-          const poster = posterBlob || await videoPoster(file)
-          if (poster) posterPath = await uploadBlob(`${base}-poster.webp`, poster, 'image/webp')
+          if (posterBlob) posterPath = await uploadBlob(`${base}-poster.webp`, posterBlob, 'image/webp')
         } catch { /* no poster — the <video> still renders */ }
         const videoPath = await uploadBlob(`${base}${ext}`, blob, contentType)
         await supabase.from('works').insert({

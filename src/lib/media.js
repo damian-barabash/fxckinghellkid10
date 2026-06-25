@@ -235,6 +235,117 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
   }
 }
 
+// True if the browser can actually decode this clip in a <video> element.
+// Some codecs (Motion-JPEG, sometimes HEVC) won't decode in Chrome/Firefox —
+// MediaRecorder can't touch those, so we route them to ffmpeg.wasm instead.
+export function canDecodeVideo(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const v = document.createElement('video')
+    v.muted = true; v.playsInline = true; v.preload = 'metadata'; v.src = url
+    let done = false
+    const fin = (ok) => { if (done) return; done = true; clearTimeout(g); URL.revokeObjectURL(url); resolve(ok) }
+    const g = setTimeout(() => fin(false), 12_000)
+    v.onloadedmetadata = () => fin(!!(v.videoWidth && v.videoHeight))
+    v.onerror = () => fin(false)
+  })
+}
+
+// ---- ffmpeg.wasm fallback (handles codecs the browser can't decode) ----
+// Single-thread core from a CDN — no COOP/COEP headers needed. Loads in
+// Chrome/Firefox desktop (not Safari/iOS, where the native MediaRecorder path
+// already covers every codec Safari can decode).
+let _ffmpeg
+async function getFfmpeg() {
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg')
+  const { toBlobURL } = await import('@ffmpeg/util')
+  if (!_ffmpeg) {
+    const ff = new FFmpeg()
+    const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
+    await ff.load({
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+    })
+    _ffmpeg = ff
+  }
+  return _ffmpeg
+}
+
+// Transcode any video to an H.264/AAC mp4 sized to fit the upload cap.
+// Resolves { blob, poster:null, ext, contentType }; throws if ffmpeg can't load.
+export async function transcodeWithFfmpeg(file, { maxWidth = 1280, crf = 30, onProgress } = {}) {
+  const { fetchFile } = await import('@ffmpeg/util')
+  const ff = await getFfmpeg()
+  const onP = onProgress ? ({ progress }) => onProgress(Math.max(0, Math.min(0.99, progress || 0))) : null
+  if (onP) ff.on('progress', onP)
+  const inName = 'in.' + ((file.name.match(/\.([a-z0-9]+)$/i)?.[1] || 'mov').toLowerCase())
+  const outName = 'out.mp4'
+  try {
+    await ff.writeFile(inName, await fetchFile(file))
+    await ff.exec([
+      '-i', inName,
+      '-vf', `scale=min(${maxWidth}\\,iw):-2`,        // downscale only, keep even dims
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-c:a', 'aac', '-b:a', '96k',
+      outName,
+    ])
+    const data = await ff.readFile(outName)
+    if (onProgress) onProgress(1)
+    const blob = new Blob([data.buffer || data], { type: 'video/mp4' })
+    if (!blob.size) throw new Error('empty ffmpeg output')
+    return { blob, poster: null, ext: '.mp4', contentType: 'video/mp4' }
+  } finally {
+    if (onP) ff.off?.('progress', onP)
+    ff.deleteFile(inName).catch(() => {})
+    ff.deleteFile(outName).catch(() => {})
+  }
+}
+
+// One call that turns any uploaded video into an under-the-cap blob + poster,
+// picking the right engine per browser/codec. Throws Error with `.code`:
+//   'too-big'     — compressed but still over the 50 MB free-tier cap
+//   'unsupported' — no engine could process this file in this browser
+export async function prepareVideo(file, { onProgress, onStage } = {}) {
+  let result = null
+
+  // 1) Browser can decode it → record off a canvas (fast, every browser).
+  let decodable = false
+  try { decodable = await canDecodeVideo(file) } catch { decodable = false }
+  if (decodable) {
+    try {
+      onStage?.('compress')
+      result = await compressVideo(file, { onProgress })
+      if (result.blob.size > MAX_UPLOAD_BYTES) {
+        const r2 = await compressVideo(file, { maxWidth: 854, targetBytes: 28 * 1024 * 1024, onProgress })
+        if (r2.blob.size < result.blob.size) result = r2
+      }
+    } catch (e) { console.warn('MediaRecorder path failed:', e); result = null }
+  }
+
+  // 2) Exotic codec (e.g. Motion-JPEG in Chrome/Firefox) or recorder overshot
+  //    → transcode with ffmpeg.wasm (its own decoders).
+  if (!result || result.blob.size > MAX_UPLOAD_BYTES) {
+    try {
+      onStage?.('transcode')
+      let r = await transcodeWithFfmpeg(file, { onProgress })
+      if (r.blob.size > MAX_UPLOAD_BYTES) {
+        const r2 = await transcodeWithFfmpeg(file, { maxWidth: 854, crf: 33, onProgress })
+        if (r2.blob.size < r.blob.size) r = r2
+      }
+      if (!result || r.blob.size < result.blob.size) result = r
+    } catch (e) { console.warn('ffmpeg path failed:', e) }
+  }
+
+  if (!result) { const err = new Error('video-unsupported'); err.code = 'unsupported'; throw err }
+  if (result.blob.size > MAX_UPLOAD_BYTES) { const err = new Error('video-too-big'); err.code = 'too-big'; throw err }
+
+  // poster: compressVideo grabs one off its canvas; ffmpeg output gets one from
+  // the (now decodable) H.264 result. Best-effort — never blocks the upload.
+  if (!result.poster) { try { result.poster = await videoPoster(result.blob) } catch { /* no poster */ } }
+  return result
+}
+
 // Make a poster (WebP) from the first frame of a video File. Best-effort:
 // hardened for iOS/iPad Safari (inline + muted, nudge play before seeking).
 export async function videoPoster(file, { maxEdge = 1280, quality = 0.82 } = {}) {
