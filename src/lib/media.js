@@ -114,7 +114,9 @@ export async function uploadVideoToR2(file, { workerUrl, accessToken, onProgress
     xhr.send(file)
   })
 
-  // 3) trigger the server-side transcode → WebM + poster, returned as R2 URLs
+  // 3) kick off the server-side transcode (async job) and poll until done.
+  // The encode runs detached on the Mac, so a long clip never depends on
+  // holding this HTTP connection open (Bun idle / Funnel timeouts).
   onStage?.('transcode')
   const tr = await fetch(`${workerUrl}/transcode`, {
     method: 'POST',
@@ -122,9 +124,25 @@ export async function uploadVideoToR2(file, { workerUrl, accessToken, onProgress
     body: JSON.stringify({ key }),
   })
   if (!tr.ok) throw new Error(await errText(tr, 'transcode'))
-  const out = await tr.json()
-  if (!out.videoUrl) throw new Error('transcode returned no video')
-  return { videoUrl: out.videoUrl, posterUrl: out.posterUrl || '' }
+  const { jobId } = await tr.json()
+  if (!jobId) throw new Error('transcode did not start')
+
+  const deadline = Date.now() + 20 * 60 * 1000 // give big clips plenty of time
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2500))
+    let job
+    try {
+      const js = await fetch(`${workerUrl}/job/${jobId}`, { headers: auth })
+      if (js.status === 404) continue // job not visible yet
+      job = await js.json()
+    } catch { continue } // transient network blip — keep polling
+    if (job.status === 'done') {
+      if (!job.videoUrl) throw new Error('transcode returned no video')
+      return { videoUrl: job.videoUrl, posterUrl: job.posterUrl || '' }
+    }
+    if (job.status === 'error') throw new Error(job.error || 'transcode failed')
+  }
+  throw new Error('transcode timed out')
 }
 
 async function errText(res, where) {
