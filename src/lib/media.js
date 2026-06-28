@@ -109,7 +109,16 @@ function withTimeout(promise, ms, msg) {
 // canvas (no separate decode pass that could hang). Every async step is
 // timeout-guarded. Resolves { blob, poster, ext, contentType }; throws on
 // failure so the caller can fall back to the original file.
-export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 1024 * 1024, onProgress } = {}) {
+//
+// `audioCtx` MUST be a RUNNING AudioContext created inside a user gesture (see
+// AdminWorks). This is the crux of the historical "video won't upload" bug:
+// attaching a <video> to a *suspended* AudioContext slaves the element's clock
+// to that context, so it never advances, the encode never finishes and the job
+// times out. With a context already resumed under the click gesture the element
+// plays normally and audio is captured silently (output is rerouted off the
+// speakers). Audio is strictly best-effort — if anything about it fails we
+// record video-only rather than failing the whole upload.
+export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 1024 * 1024, onProgress, audioCtx } = {}) {
   if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) {
     throw new Error('MediaRecorder unsupported')
   }
@@ -124,7 +133,7 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
   video.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none'
   document.body.appendChild(video)
   let raf = 0
-  let audioCtx
+  let useRVFC = typeof video.requestVideoFrameCallback === 'function'
 
   try {
     await withTimeout(new Promise((res, rej) => {
@@ -145,20 +154,19 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     const ctx = canvas.getContext('2d')
     const stream = canvas.captureStream(30)
 
-    // route the clip's audio into the recorded stream (silent on speakers —
-    // creating a MediaElementSource reroutes the element away from output)
+    // Route the clip's audio into the recorded stream. Only do this with a
+    // RUNNING context — a suspended one would stall the element (the old bug).
+    // Output is rerouted into the graph, so the speakers stay silent.
     let hasAudioGraph = false
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext
-      if (AC) {
-        audioCtx = new AC()
+    if (audioCtx && audioCtx.state === 'running') {
+      try {
         const src = audioCtx.createMediaElementSource(video)
         const dest = audioCtx.createMediaStreamDestination()
         src.connect(dest)
         dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr))
         hasAudioGraph = true
-      }
-    } catch { /* no audio track / unsupported — video only */ }
+      } catch { /* no audio track / already wired — record video only */ }
+    }
 
     const dur = video.duration && isFinite(video.duration) ? video.duration : 60
     const audioBps = 96_000
@@ -175,13 +183,12 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
     const stopped = new Promise((res) => { rec.onstop = res })
 
-    // Start playback. With the audio graph attached the element can stay
-    // unmuted (output is rerouted, so speakers stay silent) — but an unmuted
-    // autoplay may be blocked, so fall back to muted playback (video-only)
-    // instead of throwing the whole job away.
-    if (audioCtx?.state === 'suspended') await audioCtx.resume().catch(() => {})
+    // With the audio graph attached the element output is rerouted, so it can
+    // stay unmuted without making sound. Without a graph keep it muted so the
+    // browser always allows programmatic playback (muted autoplay is never
+    // blocked). Either way, fall back to muted playback before giving up.
+    if (hasAudioGraph) video.muted = false
     try {
-      if (hasAudioGraph) video.muted = false
       await withTimeout(video.play(), 10_000, 'play timeout')
     } catch {
       video.muted = true
@@ -192,16 +199,24 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
 
     rec.start(1000)
     let poster = null
-    const draw = () => {
+    const paint = () => {
       ctx.drawImage(video, 0, 0, w, h)
       // grab a poster from the first painted frame (same canvas, no extra decode)
       if (!poster && video.currentTime > 0) {
         try { canvas.toBlob((b) => { if (b && !poster) poster = b }, 'image/webp', 0.82) } catch { /* ignore */ }
       }
       if (onProgress && dur) onProgress(Math.min(0.99, video.currentTime / dur))
-      if (!video.ended && !video.paused) raf = requestAnimationFrame(draw)
     }
-    draw()
+    // Drive painting off decoded frames when available (precise, resilient to
+    // background-tab rAF throttling); fall back to requestAnimationFrame.
+    const tick = () => {
+      paint()
+      if (video.ended || video.paused) return
+      if (useRVFC) video.requestVideoFrameCallback(tick)
+      else raf = requestAnimationFrame(tick)
+    }
+    if (useRVFC) video.requestVideoFrameCallback(tick)
+    else { raf = requestAnimationFrame(tick) }
 
     // Wait for playback to finish — Safari does not always fire `ended` for a
     // programmatic element, so also poll currentTime. Hard cap so a stuck clip
@@ -220,7 +235,6 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
     if (onProgress) onProgress(1)
     rec.stop()
     await Promise.race([stopped, new Promise((r) => setTimeout(r, 5000))])
-    audioCtx?.close?.().catch(() => {})
 
     const outType = (mimeType ? mimeType.split(';')[0] : '') || chunks[0]?.type || 'video/webm'
     const blob = new Blob(chunks, { type: outType })
@@ -229,7 +243,6 @@ export async function compressVideo(file, { maxWidth = 1280, targetBytes = 40 * 
   } finally {
     cancelAnimationFrame(raf)
     try { video.pause() } catch { /* ignore */ }
-    audioCtx?.close?.().catch(() => {})
     URL.revokeObjectURL(url)
     video.remove()
   }
@@ -306,18 +319,19 @@ export async function transcodeWithFfmpeg(file, { maxWidth = 1280, crf = 30, onP
 // picking the right engine per browser/codec. Throws Error with `.code`:
 //   'too-big'     — compressed but still over the 50 MB free-tier cap
 //   'unsupported' — no engine could process this file in this browser
-export async function prepareVideo(file, { onProgress, onStage } = {}) {
+export async function prepareVideo(file, { onProgress, onStage, audioCtx } = {}) {
   let result = null
 
   // 1) Browser can decode it → record off a canvas (fast, every browser).
-  let decodable = false
-  try { decodable = await canDecodeVideo(file) } catch { decodable = false }
-  if (decodable) {
+  // We only accept MP4/H.264, which decodes in every target browser, so try the
+  // MediaRecorder path directly (skipping the extra canDecodeVideo probe keeps
+  // the click gesture fresh for autoplay).
+  {
     try {
       onStage?.('compress')
-      result = await compressVideo(file, { onProgress })
+      result = await compressVideo(file, { onProgress, audioCtx })
       if (result.blob.size > MAX_UPLOAD_BYTES) {
-        const r2 = await compressVideo(file, { maxWidth: 854, targetBytes: 28 * 1024 * 1024, onProgress })
+        const r2 = await compressVideo(file, { maxWidth: 854, targetBytes: 28 * 1024 * 1024, onProgress, audioCtx })
         if (r2.blob.size < result.blob.size) result = r2
       }
     } catch (e) { console.warn('MediaRecorder path failed:', e); result = null }

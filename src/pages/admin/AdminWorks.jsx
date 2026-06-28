@@ -47,6 +47,17 @@ export default function AdminWorks() {
   const create = async (e) => {
     e.preventDefault()
     if (!files.length) return
+    // Create + resume the AudioContext synchronously, inside the click gesture,
+    // BEFORE any await — so compressVideo gets a *running* context. Attaching a
+    // <video> to a suspended context stalls playback and the encode never
+    // finishes (the root cause of the old "video won't upload" bug).
+    let audioCtx = null
+    if (isVideo) {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext
+        if (AC) { audioCtx = new AC(); audioCtx.resume?.().catch(() => {}) }
+      } catch { /* audio best-effort; video-only is fine */ }
+    }
     setBusy(true)
     try {
       const stamp = Date.now().toString(36)
@@ -61,10 +72,15 @@ export default function AdminWorks() {
         // also MJPEG/HEVC in Safari), ffmpeg.wasm as a best-effort fallback for
         // exotic codecs in Chrome/Firefox. It throws a coded error otherwise.
         const file = files[0]
+        // MP4/H.264 only — the one format that decodes reliably in every
+        // browser, so the in-browser compressor always works.
+        const isMp4 = /\.mp4$/i.test(file.name) || file.type === 'video/mp4'
+        if (!isMp4) throw new Error(t('admin.videoMp4Only'))
         let blob, ext, contentType, posterBlob
         try {
           setProgress(t('admin.videoConvert'))
           const out = await prepareVideo(file, {
+            audioCtx,
             onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`),
           })
           blob = out.blob; ext = out.ext; contentType = out.contentType; posterBlob = out.poster
@@ -130,6 +146,7 @@ export default function AdminWorks() {
     } catch (err) {
       alert('Error: ' + (err.message || err))
     } finally {
+      audioCtx?.close?.().catch(() => {})
       setBusy(false); setProgress('')
     }
   }
@@ -180,7 +197,7 @@ export default function AdminWorks() {
         <input className="inp" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('admin.titleHint')} />
 
         <label className="lbl mt">{isVideo ? t('admin.typeVideo') : t('admin.files')}</label>
-        <input className="inp" type="file" accept={isVideo ? 'video/*' : 'image/*'} multiple={!isVideo}
+        <input className="inp" type="file" accept={isVideo ? 'video/mp4,.mp4' : 'image/*'} multiple={!isVideo}
                onChange={(e) => setFiles([...e.target.files])} />
 
         {!isProject && !isVideo && cat && (
