@@ -16,12 +16,9 @@ export default function WorkTile({ work, index = 0, onOpen }) {
          onClick={() => onOpen(work)} role="button" tabIndex={0}
          onKeyDown={(e) => e.key === 'Enter' && onOpen(work)}>
       {isVideo ? (
-        <>
-          <video src={publicUrl(work.video_url)} poster={thumb || undefined}
-                 muted loop autoPlay playsInline preload="metadata"
-                 onLoadedData={() => setReady(true)} />
-          <span className="tile__play" aria-hidden>▶</span>
-        </>
+        <video src={publicUrl(work.video_url)} poster={thumb || undefined}
+               muted loop autoPlay playsInline preload="metadata"
+               onLoadedData={() => setReady(true)} />
       ) : (
         <img src={thumb} alt={work.title || ''} loading="lazy"
              onLoad={() => setReady(true)} onError={() => setReady(true)} />

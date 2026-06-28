@@ -236,17 +236,6 @@ button { font-family: inherit; cursor: pointer; }
   transition: transform 0.5s cubic-bezier(.2,.7,.2,1), filter 0.4s;
 }
 .tile:hover img, .tile:hover video { transform: scale(1.05); }
-.tile__play {
-  position: absolute; inset: 0; margin: auto;
-  width: 56px; height: 56px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px; color: #000;
-  background: var(--green); border-radius: 50%;
-  box-shadow: 0 0 30px rgba(149,255,69,0.5);
-  pointer-events: none;
-  opacity: 0.92; transition: transform 0.3s;
-}
-.tile:hover .tile__play { transform: scale(1.1); }
 .tile__cap {
   position: absolute;
   left: 0; right: 0; bottom: 0;
