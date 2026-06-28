@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { supabase, publicUrl, MEDIA_BUCKET } from '../../lib/supabase.js'
+import { supabase, publicUrl, MEDIA_BUCKET, VIDEO_WORKER_URL } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, prepareVideo } from '../../lib/media.js'
+import { toWebp, buildPdf, slugify, uploadVideoToR2, deleteFromR2 } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import Masonry from '../../components/Masonry.jsx'
 
@@ -47,17 +47,6 @@ export default function AdminWorks() {
   const create = async (e) => {
     e.preventDefault()
     if (!files.length) return
-    // Create + resume the AudioContext synchronously, inside the click gesture,
-    // BEFORE any await — so compressVideo gets a *running* context. Attaching a
-    // <video> to a suspended context stalls playback and the encode never
-    // finishes (the root cause of the old "video won't upload" bug).
-    let audioCtx = null
-    if (isVideo) {
-      try {
-        const AC = window.AudioContext || window.webkitAudioContext
-        if (AC) { audioCtx = new AC(); audioCtx.resume?.().catch(() => {}) }
-      } catch { /* audio best-effort; video-only is fine */ }
-    }
     setBusy(true)
     try {
       const stamp = Date.now().toString(36)
@@ -66,38 +55,28 @@ export default function AdminWorks() {
       const minSort = Math.min(0, ...works.filter((w) => w.category === category).map((w) => w.sort)) - 1
 
       if (isVideo) {
-        // Process the clip entirely in the browser so the upload fits Supabase's
-        // 50 MB free-tier cap. prepareVideo picks the right engine per codec:
-        // MediaRecorder for anything the browser can decode (H.264 everywhere,
-        // also MJPEG/HEVC in Safari), ffmpeg.wasm as a best-effort fallback for
-        // exotic codecs in Chrome/Firefox. It throws a coded error otherwise.
+        // Upload the original straight to Cloudflare R2 (no Supabase 50 MB cap)
+        // and let the Mac Studio worker transcode it to WebM with real ffmpeg.
+        // We get back public r2.dev URLs for the WebM + its poster, which the
+        // site renders directly (publicUrl passes absolute URLs through).
         const file = files[0]
-        // MP4/H.264 only — the one format that decodes reliably in every
-        // browser, so the in-browser compressor always works.
-        const isMp4 = /\.mp4$/i.test(file.name) || file.type === 'video/mp4'
-        if (!isMp4) throw new Error(t('admin.videoMp4Only'))
-        let blob, ext, contentType, posterBlob
+        const { data: { session } } = await supabase.auth.getSession()
+        const accessToken = session?.access_token
+        let videoUrl, posterUrl
         try {
-          setProgress(t('admin.videoConvert'))
-          const out = await prepareVideo(file, {
-            audioCtx,
-            onProgress: (r) => setProgress(`${t('admin.videoConvert')} ${Math.round(r * 100)}%`),
+          const out = await uploadVideoToR2(file, {
+            workerUrl: VIDEO_WORKER_URL,
+            accessToken,
+            onStage: (s) => setProgress(s === 'transcode' ? t('admin.videoConvert') : t('admin.uploading')),
+            onProgress: (r) => setProgress(`${t('admin.uploading')} ${Math.round(r * 100)}%`),
           })
-          blob = out.blob; ext = out.ext; contentType = out.contentType; posterBlob = out.poster
+          videoUrl = out.videoUrl; posterUrl = out.posterUrl
         } catch (err) {
-          if (err?.code === 'too-big') throw new Error(t('admin.videoTooBig'))
-          if (err?.code === 'unsupported') throw new Error(t('admin.videoUnsupported'))
-          throw err
+          throw new Error(`${t('admin.videoFailed')} ${err.message || err}`)
         }
-        setProgress(t('admin.uploading'))
-        let posterPath = null
-        try {
-          if (posterBlob) posterPath = await uploadBlob(`${base}-poster.webp`, posterBlob, 'image/webp')
-        } catch { /* no poster — the <video> still renders */ }
-        const videoPath = await uploadBlob(`${base}${ext}`, blob, contentType)
         await supabase.from('works').insert({
           category, kind: 'video', title: title.trim() || null,
-          thumb_url: posterPath, images: posterPath ? [posterPath] : [], video_url: videoPath, sort: minSort,
+          thumb_url: posterUrl || null, images: posterUrl ? [posterUrl] : [], video_url: videoUrl, sort: minSort,
         })
       } else if (isProject) {
         const blobs = []; const paths = []; let i = 0
@@ -146,15 +125,21 @@ export default function AdminWorks() {
     } catch (err) {
       alert('Error: ' + (err.message || err))
     } finally {
-      audioCtx?.close?.().catch(() => {})
       setBusy(false); setProgress('')
     }
   }
 
   const remove = async (w) => {
     if (!confirm(t('admin.confirmDelete'))) return
-    const paths = [...(w.images || []), w.pdf_url, w.video_url].filter(Boolean)
-    if (paths.length) await supabase.storage.from(MEDIA_BUCKET).remove(paths)
+    const all = [...new Set([...(w.images || []), w.pdf_url, w.video_url, w.thumb_url].filter(Boolean))]
+    // R2-hosted media is stored as absolute URLs; Supabase Storage as relative paths.
+    const r2 = all.filter((p) => /^https?:\/\//.test(p))
+    const storage = all.filter((p) => !/^https?:\/\//.test(p))
+    if (storage.length) await supabase.storage.from(MEDIA_BUCKET).remove(storage)
+    if (r2.length) {
+      const { data: { session } } = await supabase.auth.getSession()
+      await deleteFromR2(r2, { workerUrl: VIDEO_WORKER_URL, accessToken: session?.access_token })
+    }
     await supabase.from('works').delete().eq('id', w.id)
     await load()
   }
@@ -197,7 +182,7 @@ export default function AdminWorks() {
         <input className="inp" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('admin.titleHint')} />
 
         <label className="lbl mt">{isVideo ? t('admin.typeVideo') : t('admin.files')}</label>
-        <input className="inp" type="file" accept={isVideo ? 'video/mp4,.mp4' : 'image/*'} multiple={!isVideo}
+        <input className="inp" type="file" accept={isVideo ? 'video/*' : 'image/*'} multiple={!isVideo}
                onChange={(e) => setFiles([...e.target.files])} />
 
         {!isProject && !isVideo && cat && (

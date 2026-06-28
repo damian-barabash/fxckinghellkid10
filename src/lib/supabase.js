@@ -8,6 +8,11 @@ export const SUPABASE_ANON_KEY =
 
 export const MEDIA_BUCKET = 'media'
 
+// Video transcode worker (runs on the Mac Studio, exposed via Tailscale Funnel).
+// Videos upload straight to Cloudflare R2 and are transcoded to WebM there,
+// bypassing Supabase Storage's 50 MB free-tier cap. See src/lib/media.js.
+export const VIDEO_WORKER_URL = 'https://barabash-ai.tailcd3444.ts.net/vid'
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
