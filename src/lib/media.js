@@ -37,6 +37,19 @@ export async function toWebp(file, { maxEdge = 2200, quality = 0.86 } = {}) {
   return blob
 }
 
+// Encode an image File to BOTH the full-size WebP (lightbox / PDF source) and a
+// small ~640px grid thumbnail. Every uploaded image gets a ".thumb.webp" sibling
+// so the public masonry grids load tiny files instead of the 1–2 MB originals —
+// the main first-load speedup on mobile. See supabase.js thumbUrl().
+export async function toWebpPair(file, opts = {}) {
+  const full = await toWebp(file, opts)
+  const thumb = await toWebp(file, { maxEdge: 640, quality: 0.72 })
+  return { full, thumb }
+}
+
+// Storage path of the thumbnail sibling for a full-image path.
+export const thumbPath = (path) => path.replace(/\.(webp|jpe?g|png)$/i, '.thumb.webp')
+
 // Build a PDF (one image per page, page sized to the image) from WebP blobs.
 // pdf-lib can't embed WebP, so we re-encode each blob to PNG via canvas first.
 async function blobToPngBytes(blob) {

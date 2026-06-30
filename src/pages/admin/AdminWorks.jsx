@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { supabase, publicUrl, MEDIA_BUCKET, VIDEO_WORKER_URL } from '../../lib/supabase.js'
+import { supabase, publicUrl, thumbUrl, MEDIA_BUCKET, VIDEO_WORKER_URL } from '../../lib/supabase.js'
 import { CATEGORIES, byKey } from '../../lib/categories.js'
-import { toWebp, buildPdf, slugify, uploadVideoToR2, deleteFromR2 } from '../../lib/media.js'
+import { toWebpPair, thumbPath, buildPdf, slugify, uploadVideoToR2, deleteFromR2 } from '../../lib/media.js'
 import { useI18n } from '../../lib/i18n.jsx'
 import Masonry from '../../components/Masonry.jsx'
 
@@ -9,6 +9,16 @@ const uploadBlob = async (path, blob, contentType) => {
   const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, blob, { contentType, upsert: true })
   if (error) throw error
   return path
+}
+
+// Upload an image File as both the full WebP (at `path`) and its small ".thumb"
+// sibling, so the public grid gets a lightweight tile. Returns the full blob
+// (needed to build project PDFs without re-downloading).
+const uploadImage = async (path, file) => {
+  const { full, thumb } = await toWebpPair(file)
+  await uploadBlob(path, full, 'image/webp')
+  await uploadBlob(thumbPath(path), thumb, 'image/webp')
+  return full
 }
 
 // Re-encode stored webp paths into a fresh PDF (used after editing a project).
@@ -82,9 +92,9 @@ export default function AdminWorks() {
         const blobs = []; const paths = []; let i = 0
         for (const file of files) {
           setProgress(`${++i}/${files.length}`)
-          const blob = await toWebp(file)
-          blobs.push(blob)
-          paths.push(await uploadBlob(`${base}/img-${i}.webp`, blob, 'image/webp'))
+          const path = `${base}/img-${i}.webp`
+          blobs.push(await uploadImage(path, file))
+          paths.push(path)
         }
         setProgress('PDF…')
         const pdf = await buildPdf(blobs)
@@ -98,8 +108,9 @@ export default function AdminWorks() {
         const paths = []; let i = 0
         for (const file of files) {
           setProgress(`${++i}/${files.length}`)
-          const blob = await toWebp(file)
-          paths.push(await uploadBlob(`${base}-${i}.webp`, blob, 'image/webp'))
+          const path = `${base}-${i}.webp`
+          await uploadImage(path, file)
+          paths.push(path)
         }
         await supabase.from('works').insert({
           category, kind: 'cover', title: title.trim() || null,
@@ -110,8 +121,8 @@ export default function AdminWorks() {
         let i = 0
         for (const file of files) {
           setProgress(`${++i}/${files.length}`)
-          const blob = await toWebp(file)
-          const path = await uploadBlob(`${base}-${i}.webp`, blob, 'image/webp')
+          const path = `${base}-${i}.webp`
+          await uploadImage(path, file)
           await supabase.from('works').insert({
             category, kind: 'cover', title: title.trim() || null,
             thumb_url: path, images: [path], sort: minSort - i,
@@ -254,7 +265,8 @@ function CategoryBlock({ cat, items, onEdit, onRemove, onReorder }) {
              onDrop={(e) => { e.preventDefault(); drop(i) }}
              onDragEnd={() => { setDragIdx(null); setOverIdx(null) }}>
           {w.thumb_url
-            ? <img src={publicUrl(w.thumb_url)} alt="" draggable={false} />
+            ? <img src={thumbUrl(w.thumb_url)} alt="" draggable={false}
+                   onError={(e) => { if (e.currentTarget.src !== publicUrl(w.thumb_url)) e.currentTarget.src = publicUrl(w.thumb_url) }} />
             : <video src={publicUrl(w.video_url)} muted playsInline preload="metadata" draggable={false} />}
           {w.kind === 'video' && <span className="adm-badge">▶</span>}
           {w.kind === 'project' && w.pdf_url && <span className="adm-badge">PDF</span>}
@@ -307,8 +319,9 @@ function EditModal({ work, onClose, onSaved }) {
         let i = 0
         for (const file of newFiles) {
           setProgress(`${++i}/${newFiles.length}`)
-          const blob = await toWebp(file)
-          images.push(await uploadBlob(`${base}-add-${i}.webp`, blob, 'image/webp'))
+          const path = `${base}-add-${i}.webp`
+          await uploadImage(path, file)
+          images.push(path)
         }
       }
       const patch = { title: title.trim() || null }

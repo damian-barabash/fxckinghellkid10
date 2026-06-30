@@ -5,7 +5,7 @@ import WorkTile from '../components/WorkTile.jsx'
 import Masonry from '../components/Masonry.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import VideoPlayer from '../components/VideoPlayer.jsx'
-import { supabase, publicUrl } from '../lib/supabase.js'
+import { supabase, publicUrl, thumbUrl } from '../lib/supabase.js'
 import { markReady, preloadImages } from '../lib/ready.js'
 import { bySlug } from '../lib/categories.js'
 import { useI18n } from '../lib/i18n.jsx'
@@ -51,7 +51,7 @@ export default function Category() {
         .order('sort', { ascending: true }).order('created_at', { ascending: false })
       if (!active) return
       const list = data || []
-      const thumbs = list.map((x) => publicUrl(x.thumb_url))
+      const thumbs = list.map((x) => thumbUrl(x.thumb_url))
       markReady(thumbs.slice(0, 9))          // initial preloader (first load only)
       await preloadImages(thumbs.slice(0, 12)) // warm the cache so heights are known
       if (!active) return

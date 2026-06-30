@@ -26,3 +26,17 @@ export function publicUrl(path) {
   if (/^https?:\/\//.test(path)) return path
   return supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl
 }
+
+// Small grid-tile variant of a stored image. The full images are 1–2 MB each
+// (used in the lightbox / PDF), which made the masonry grids painfully slow to
+// load over mobile the first time. A ~640px ".thumb.webp" sibling is generated
+// next to every uploaded image (see media.js toWebpPair + scripts/thumbs.mjs),
+// shrinking each tile to ~30–60 KB. Absolute URLs (R2 video posters) are already
+// small and pass through unchanged; if a thumb is somehow missing the tile falls
+// back to the full image (WorkTile onError).
+export function thumbUrl(path) {
+  if (!path) return ''
+  if (/^https?:\/\//.test(path)) return path
+  if (/\.thumb\.webp$/i.test(path)) return publicUrl(path)
+  return publicUrl(path.replace(/\.(webp|jpe?g|png)$/i, '.thumb.webp'))
+}
